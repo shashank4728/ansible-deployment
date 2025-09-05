@@ -13,8 +13,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Step 1: Check out your repository's code
       - name: Check out the repository
         uses: actions/checkout@v4
 
+      # Step 2: Set up a Python environment
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # Step 3: Install the ansible-lint tool using pip
+      - name: Install ansible-lint
+        run: pip install ansible-lint
+
+      # Step 4: Run the linter against your code
       - name: Run ansible-lint
-        uses: ansible/ansible-lint-action@v6
+        run: ansible-lint
