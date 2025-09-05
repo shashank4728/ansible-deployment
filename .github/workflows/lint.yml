@@ -1,7 +1,6 @@
 # .github/workflows/lint.yml
 name: Ansible Lint
 
-# This workflow runs on every push and pull request to the main branch
 on:
   push:
     branches: [ "main" ]
@@ -14,10 +13,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # This step checks out a copy of your repository code
       - name: Check out the repository
         uses: actions/checkout@v4
 
-      # This step runs the ansible-lint action
       - name: Run ansible-lint
-        uses: ansible-community/ansible-lint-action@v6
+        uses: ansible/ansible-lint-action@v6
