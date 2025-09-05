@@ -42,7 +42,7 @@
         state: directory
         owner: build
         group: build
-        mode: 0755
+        mode: '0755'
 
     - name: "Unarchive the application bundle"
       unarchive:
@@ -127,10 +127,13 @@
       debug:
         var: start.stdout_lines
 
-    - name: "Wait for {{ timeout }} seconds for the application to start"
-      wait_for:
-        timeout: "{{ timeout }}"
-      delegate_to: localhost
+#    - name: "Wait for {{ timeout }} seconds for the application to start"
+#      wait_for:
+#        timeout: "{{ timeout }}"
+#      delegate_to: localhost
+    - name: "Wait for {{ healthcheck_timeout }} seconds for the application to start"
+      ansible.builtin.wait_for:
+        timeout: "{{ healthcheck_timeout }}"
 
     - name: "Health Check: Verify the application status page is accessible"
       uri:

@@ -1,0 +1,32 @@
+# .github/workflows/lint.yml
+name: Ansible Lint
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  lint:
+    name: Run ansible-lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install ansible and ansible-lint
+        run: pip install ansible ansible-lint
+
+      # --- NEW STEP ADDED HERE ---
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install community.general
+
+      - name: Run ansible-lint
+        run: ansible-lint
