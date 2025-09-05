@@ -1,0 +1,169 @@
+---
+- name: Installing scsserver application bundle
+  block:
+    # -------------------------------------------------------------------------
+    # 1. GATHER INFO AND STOP OLD APPLICATION
+    # -------------------------------------------------------------------------
+    - name: "Get stats on the live symlink to find current version"
+      stat:
+        path: "/usr/local/ingenuity/{{ application_name }}/{{ application_name }}-live"
+      register: live_symlink
+
+    - name: "Set live_application_version fact"
+      set_fact:
+        live_application_version: "{{ live_symlink.stat.lnk_target.split('/')[-1] | replace(application_name + '-', '') }}"
+      when: live_symlink.stat.islnk is defined and live_symlink.stat.islnk
+
+    - name: "Abort if bundle version and live version are the same (and not forced)"
+      fail:
+        msg: "{{ ansible_hostname }} - Aborting deployment since bundle version ({{ application_version }}) and live version ({{ live_application_version }}) are the same."
+      when:
+        - live_application_version is defined
+        - application_version == live_application_version
+        - not force_deploy|bool # 'force_deploy' can be passed as -e force_deploy=true
+
+    - name: "Stop the application using the live symlink"
+      shell: "setsid /bin/sh -c /usr/local/ingenuity/{{ application_name }}/{{ application_name }}-live/bin/{{ application_name }}.sh stop"
+      register: stop
+      when: live_symlink.stat.islnk is defined and live_symlink.stat.islnk
+      ignore_errors: true
+
+    - name: "Print stop command output"
+      debug:
+        var: stop.stdout_lines
+      when: stop.stdout_lines is defined
+
+    # -------------------------------------------------------------------------
+    # 2. DEPLOY AND CONFIGURE NEW VERSION
+    # -------------------------------------------------------------------------
+    - name: "Create the installation directory for the new version"
+      file:
+        path: "/usr/local/ingenuity/{{ application_name }}/{{ application_name }}-{{ application_version }}"
+        state: directory
+        owner: build
+        group: build
+        mode: 0755
+
+    - name: "Unarchive the application bundle"
+      unarchive:
+        src: "{{ app_file.path }}" # This is set by kmacommon role
+        dest: "/usr/local/ingenuity/{{ application_name }}/{{ application_name }}-{{ application_version }}"
+        remote_src: yes
+        owner: build
+        group: build
+        extra_opts: [--strip-components=1] # Removes the top-level 'scsserver' directory from the bundle
+
+    - name: "Set scServerPort in setup/scsserver.properties"
+      lineinfile:
+        path: "/usr/local/ingenuity/{{ application_name }}/{{ application_name }}-{{ application_version }}/setup/scsserver.properties"
+        regexp: '^scServerPort='
+        line: "scServerPort={{ tcp_port }}"
+        owner: build
+        group: build
+
+    - name: "Set the docBase path in setup/contextroot.xml"
+      lineinfile:
+        path: "/usr/local/ingenuity/{{ application_name }}/{{ application_name }}-{{ application_version }}/setup/contextroot.xml"
+        regexp: '<Context docBase='
+        line: '  <Context docBase="/usr/local/ingenuity/{{ application_name }}/{{ tcp_port }}/web" path="" reloadable="false" debug="0" allowLinking="true">'
+        owner: build
+        group: build
+      # Note: This file seems to be a template. The setup.sh probably copies it. We modify it first.
+
+    - name: "Execute the post-install setup script"
+      command: "sh setup/setup.sh"
+      args:
+        chdir: "/usr/local/ingenuity/{{ application_name }}/{{ application_name }}-{{ application_version }}"
+      register: setup_output
+
+    - name: "Print the stdout of setup run"
+      debug:
+        var: setup_output.stdout_lines
+
+    # -------------------------------------------------------------------------
+    # 3. SYMLINKING AND ACTIVATION
+    # -------------------------------------------------------------------------
+    - name: "Create symlink for the logs directory"
+      file:
+        src: "/usr/local/ingenuity/logs/{{ application_name }}"
+        dest: "/usr/local/ingenuity/{{ application_name }}/{{ application_name }}-{{ application_version }}/logs"
+        state: link
+        force: true
+        owner: build
+        group: build
+
+    - name: "Remove old 'port' and 'live' symlinks"
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_items:
+        - "/usr/local/ingenuity/{{ application_name }}/{{ application_name }}-live"
+        - "/usr/local/ingenuity/{{ application_name }}/{{ tcp_port }}"
+
+    - name: "Create new 'port' symlink to the versioned directory"
+      file:
+        src: "/usr/local/ingenuity/{{ application_name }}/{{ application_name }}-{{ application_version }}"
+        dest: "/usr/local/ingenuity/{{ application_name }}/{{ tcp_port }}"
+        state: link
+        owner: build
+        group: build
+
+    - name: "Create new 'live' symlink to the port symlink"
+      file:
+        src: "/usr/local/ingenuity/{{ application_name }}/{{ tcp_port }}"
+        dest: "/usr/local/ingenuity/{{ application_name }}/{{ application_name }}-live"
+        state: link
+        owner: build
+        group: build
+
+    # -------------------------------------------------------------------------
+    # 4. START AND VERIFY
+    # -------------------------------------------------------------------------
+    - name: "Starting the application using the live symlink"
+      shell: "setsid /bin/sh -c /usr/local/ingenuity/{{ application_name }}/{{ application_name }}-live/bin/{{ application_name }}.sh start"
+      register: start
+
+    - name: "Print startup output"
+      debug:
+        var: start.stdout_lines
+
+    - name: "Wait for {{ timeout }} seconds for the application to start"
+      wait_for:
+        timeout: "{{ timeout }}"
+      delegate_to: localhost
+
+    - name: "Health Check: Verify the application status page is accessible"
+      uri:
+        url: "http://{{ ansible_hostname }}:{{ tcp_port }}/{{ healthcheck_url }}"
+        method: GET
+        status_code: 200
+      retries: 20
+      delay: 10
+      register: result
+      until: result.status == 200
+      delegate_to: localhost
+
+    # -------------------------------------------------------------------------
+    # 5. CLEANUP
+    # -------------------------------------------------------------------------
+    - name: "Clean up old installation and bundles"
+      import_role:
+        name: kmacleanup
+
+    - name: "Remove the deploy.lock file once deployment is complete"
+      file:
+        path: "{{ artifact_location }}/deploy.lock" # artifact_location comes from kmacommon
+        state: absent
+      delegate_to: localhost
+      ignore_errors: true
+
+  rescue:
+    - name: "FAILURE: Remove the deploy.lock file"
+      file:
+        path: "{{ artifact_location }}/deploy.lock"
+        state: absent
+      delegate_to: localhost
+
+    - name: "FAILURE: Application deployment failed"
+      fail:
+        msg: "{{ ansible_hostname }} - Application deployment failed. Please check logs for errors."

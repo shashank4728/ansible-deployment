@@ -1,0 +1,9 @@
+---
+- hosts: "{{ server_name }}"
+  remote_user: build
+
+  gather_facts: yes
+  any_errors_fatal: true
+
+  roles:
+    - { role: scsserver, tags: ['never', 'scsserver'] }

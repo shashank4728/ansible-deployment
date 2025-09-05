@@ -1,0 +1,203 @@
+---
+
+- name: Performing common tasks
+  block:
+
+    # Pause  deployment if  promotion lock exists. Max  15 minutes
+    - name: '"{{ ansible_hostname }}" - Wait until {{ artifact_location }}/promotion.lock is removed'
+      wait_for:
+        path: '{{ artifact_location }}/promotion.lock'
+        state: absent
+        timeout: 60
+        msg: Promotion lock exists for more than 15 minutes.
+      delegate_to: localhost
+      retries: 14
+      register: prom
+      until: prom is succeeded
+      ignore_errors: true
+
+    # Remove promotion lock  if it exists for more than 15 minutes
+    - name: '{{ ansible_hostname }} - Remove {{ artifact_location }}/promotion.lock'
+      file:
+        path: '{{ artifact_location }}/promotion.lock'
+        state: absent
+      delegate_to: localhost
+      when: prom is failed
+
+    # Check backup-file
+    - stat:
+        path: /usr/local/ingenuity/{{ application_name }}.tgz
+      register: backupfile
+
+    # Backup current application directory
+    - name: '{{ ansible_hostname }} - Create a backup of application'
+      archive:
+        path: /usr/local/ingenuity/{{ application_name }}/
+        dest: /usr/local/ingenuity/{{ application_name }}.tgz
+        exclude_path:
+          - /usr/local/ingenuity/{{ application_name }}/gene_confidence
+          - /usr/local/ingenuity/{{ application_name }}/temp
+          - /usr/local/ingenuity/{{ application_name }}/{{ application_name }}-live/tomcat/logs
+      when:
+        - (env in upadm5) or (env in prodregion)
+        - backupfile.stat.exists == False
+      ignore_errors: true
+
+    # Create deploy lock
+    - name: '"{{ ansible_hostname }}" - create deploy.lock file if it doesnt exist to start the deployment'
+      copy:
+        content: ""
+        dest: "{{ artifact_location }}/deploy.lock"
+        force: no
+        group: build
+        owner: build
+        mode: 0755
+      delegate_to: localhost
+
+    # Create parent application directory
+    - name: '"{{ ansible_hostname }}" - Create {{ application_name }} directory'
+      file:
+        path: '/usr/local/ingenuity/{{ application_name }}/{{ application_name }}{{ tcp_port }}'
+        state: directory
+        owner: build
+        group: build
+        mode: 0755
+
+    # Clean temp directory
+    - name: '"{{ ansible_hostname }}" - Clean ansible_temp directory'
+      file:
+        path: '/usr/local/ingenuity/{{ application_name }}/{{ application_name }}{{ tcp_port }}/ansible_temp/'
+        state: absent
+        owner: build
+        group: build
+        mode: 0755
+
+    # Create directory to copy bundle
+    - name: '"{{ ansible_hostname }}" - Creating ansible_temp directory to copy bundle'
+      file:
+        path: '/usr/local/ingenuity/{{ application_name }}/{{ application_name }}{{ tcp_port }}/ansible_temp/'
+        state: directory
+        owner: build
+        group: build
+        mode: 0755
+
+    # Creates the installation directory
+    - name: '"{{ ansible_hostname }}" - Create {{ application_name }} install directory'
+      file:
+        path: '/usr/local/ingenuity/{{ application_name }}/{{ application_name }}{{ tcp_port }}/install'
+        state: directory
+        owner: build
+        group: build
+        mode: 0755
+
+    # Transfer bundle from artifact location to remote server
+    - name: '"{{ ansible_hostname }}" - Copy artifact from {{ artifact_location }}'
+      synchronize:
+        src: '{{ artifact_location }}/'
+        dest: '/usr/local/ingenuity/{{ application_name }}/{{ application_name }}{{ tcp_port }}/ansible_temp/'
+        rsync_opts:
+          - '--include={{ application_name }}-*.tar.gz'
+          - '--include={{ application_name }}server-*.tar.gz'
+          - '--include={{ application_name }}_server-*.tar.gz'
+          - '--include={{ application_name }}-server-*.tar.gz'
+          - '--exclude=*'
+      when: not obfuscation|bool
+
+    # Find tar.gz bundles
+    - name: '"{{ ansible_hostname }}" - Looking for bundles'
+      find:
+        paths: '/usr/local/ingenuity/{{ application_name }}/{{ application_name }}{{ tcp_port }}/ansible_temp/'
+        patterns: '{{ application_name }}*.tar.gz'
+      register: app_files
+
+    # Fail if no bundle have transferred
+    - fail:
+        msg: "Bundle is not present. Please promote bundle."
+      when:
+        - app_files.matched == 0
+        - not ansible_check_mode
+
+    - name: '"{{ ansible_hostname }}" - Pick the latest package in case of multiple bundles are present'
+      set_fact:
+        app_file: "{{ app_files.files | sort(attribute='mtime') | last }}"
+      when: not ansible_check_mode
+
+    # Print the application version
+    - name: '"{{ ansible_hostname }}" - Print the bundle version'
+      debug:
+        msg: "The bundle version {{ app_file.path.split('/')[7].split('.tar.gz')[0].split('-')[-1] }} will be deployed for {{ application_name }}"
+      when: not ansible_check_mode
+
+    # Set up the application_version variable
+    - name: '"{{ ansible_hostname }}" - Set application_version'
+      set_fact:
+        application_version: "{{ app_file.path.split('/')[7].split('.tar.gz')[0].split('-')[-1] }}"
+      when: not ansible_check_mode
+
+    # Creates the configuration directory
+    - name: '"{{ ansible_hostname }}" - Create {{ application_name }} configuration directory'
+      file:
+        path: '/usr/local/ingenuity/{{ application_name }}/{{ application_name }}{{ tcp_port }}/{{ application_name }}-{{ application_version }}/conf/'
+        state: directory
+        owner: build
+        group: build
+        recurse: yes
+        mode: 0755
+      when: not ansible_check_mode
+
+    # Create application log directory
+    - name: '"{{ ansible_hostname }}" - Create {{ application_name }} log directory'
+      file:
+        path: '/usr/local/ingenuity/logs/{{ application_name }}'
+        state: directory
+        owner: build
+        group: build
+        mode: 0755
+      when: 
+        - not ansible_check_mode
+        - application_name != 'ikrsserver' or application_name != 'ka_clinical_mapping'
+
+    # Create application log directory
+    - name: '"{{ ansible_hostname }}" - Create {{ application_name }} log directory'
+      file:
+        path: '/usr/local/ingenuity/logs/{{ application_name }}/{{ tcp_port }}'
+        state: directory
+        owner: build
+        group: build
+        mode: 0755
+      when:
+        - not ansible_check_mode
+        - application_name == 'ikrsserver' or application_name == 'ka_clinical_mapping'
+        
+
+    # Check if  propertfiles version is same as bundle version
+    - name: '{{ ansible_hostname }} - Checking if application version {{ application_version }} matches property version at {{ property_link }}/{{ application_name }}/{{ env }}'
+      uri:
+        url: '{{ property_link }}/{{ application_name }}/{{ env }}/'
+        return_content: yes
+      register: propversion
+      failed_when: "application_version not in propversion.content"
+      when: propertyfiles is defined
+      delegate_to: localhost
+      ignore_errors: true
+      run_once: true
+
+    # Fail if property version does not match bundle version in pdm, prod apps
+    - name: "{{ ansible_hostname }} - Making sure {{ application_version }} matches at {{ property_link }}/{{ application_name }}/{{ env }}"
+      fail:
+        msg: 'Promotion not done for {{ application_name }}-{{ application_version }} in {{ env }}'
+      when:
+        - propertyfiles is defined
+        - (env in upadm5) or (env in prodregion)
+        - application_version not in propversion.content
+
+  rescue:
+
+    - name: '{{ ansible_hostname }} - Remove the deploy.lock file once deployment cannot go through'
+      file:
+        path: "{{ artifact_location }}/deploy.lock"
+        state: absent
+      delegate_to: localhost
+
+    - fail:
+        msg: "{{ ansible_hostname }} - Application deployment failed. Common Role."

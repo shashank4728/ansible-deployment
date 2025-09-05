@@ -1,0 +1,9 @@
+---
+# The application name, used throughout the playbooks
+application_name: scsserver
+
+healthcheck_url: web/public/status.jsp
+
+# Wait 30 seconds after starting before the first health check.
+# scsserver might take a moment to initialize.
+timeout: 30

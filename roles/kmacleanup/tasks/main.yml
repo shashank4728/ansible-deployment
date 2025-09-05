@@ -1,0 +1,86 @@
+---
+- name: 'Delete old bundles'
+  block:
+  # - last_app : get current last version of component installed
+  # - live_app : get current live version of component installed
+  - stat:
+      path: '/usr/local/ingenuity/{{ application_name }}/{{ application_name }}{{ tcp_port }}/{ application_name }}{{ tcp_port }}-last'
+    register: last_app
+
+  # Register variables
+  - stat:
+      path: '/usr/local/ingenuity/{{ application_name }}/{{ tcp_port }}'
+    register: live_app
+  
+  # Print the versions of the applications installed
+  - debug:
+      msg: "Last version of application installed for {{ application_name }}: {{ last_app.stat.lnk_target.split('-')[-1] }} "
+    when: 
+      - last_app.stat.islnk is defined and last_app.stat.islnk == True
+
+  - debug:
+      msg: "Live version of application installed for {{ application_name }}: {{ live_app.stat.lnk_target.split('-')[-1] }} "
+    
+  - name: '{{ ansible_hostname }} - Copy installed bundle to install directory'
+    copy:
+      src: "{{ app_file.path }}"
+      dest: '/usr/local/ingenuity/{{ application_name }}/{{ application_name }}{{ tcp_port }}/install/'
+      remote_src: yes
+      owner: build
+      group: build
+      mode: 0644
+    when: not ansible_check_mode
+
+  # Look for old bundles in install
+  - name: '{{ ansible_hostname }} - Find bundles present in install directory'
+    find:
+      paths: /usr/local/ingenuity/{{ application_name }}/{{ application_name }}{{ tcp_port }}/install/
+      patterns: '{{ application_name }}-*.tar.gz'
+    register: bunsOlder
+    when: not ansible_check_mode
+
+  # Delete old bundles from install
+  - name: '{{ ansible_hostname }} - Delete old bundles from install directory'
+    file:
+      path: "{{ item.path }}"
+      state: absent
+    with_items: "{{ (bunsOlder.files | sort(attribute='mtime',reverse=True))[2:] | list }}"
+    when: not ansible_check_mode
+
+  # Look for old installations
+  - name: '{{ ansible_hostname }} - Look for old application installations'
+    find:
+      paths: '/usr/local/ingenuity/{{ application_name }}/{{ application_name }}{{ tcp_port }}/'
+      file_type: directory
+      excludes: '{{ last_app.stat.lnk_target | basename }},{{ live_app.stat.lnk_target | basename }},{{ application_name }}-cache*,{{ application_name }}-data'
+      patterns: '{{ application_name }}-*'
+    register: dirsOlder
+    when:
+      - not ansible_check_mode
+      - live_app.stat.islnk is defined and live_app.stat.islnk == True
+      - last_app.stat.islnk is defined and last_app.stat.islnk == True
+
+  # Delete old installations
+  - name: '{{ ansible_hostname }} - Delete old application installations'
+    file:
+      path: "{{ item.path }}"
+      state: absent
+    with_items: "{{ dirsOlder.files }}"
+    when:
+      - not ansible_check_mode
+      - dirsOlder is defined
+      - live_app.stat.islnk is defined and live_app.stat.islnk == True
+      - last_app.stat.islnk is defined and last_app.stat.islnk == True
+
+
+  - name: '{{ ansible_hostname }} - Delete temp directory'
+    file:
+      path: '/usr/local/ingenuity/{{ application_name }}/{{ application_name }}{{ tcp_port }}/ansible_temp'
+      state: absent
+    when:
+      - not ansible_check_mode
+
+
+  rescue:
+  - fail:
+      msg: "Clean up kma old bundles failed"
